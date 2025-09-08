@@ -1,0 +1,9 @@
+.venv/
+Papers/
+Results/
+*.log
+*.pyc
+*.deb
+*.png
+*.sh
+*.md
