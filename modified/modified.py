@@ -12,22 +12,19 @@ import tensorflow as tf
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Dense, BatchNormalization, Dropout, LeakyReLU
 from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.models import save_model
 
+from RGAE.SuperGraph import supergraph
 from utils.adaptive_thresh import tune_methods
 
+# ! Trying to use supergraph + hadgan approach
+# ! Will try adding L21 norm in reconstruction and consistency losses
+# ! Can use supergraph in postprocessing in spatial detector
+# ! Use the adaptive weighted thresholding loss function
+
 tf.config.optimizer.set_jit(False)
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 bce_logits = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-l2_reg = tf.keras.regularizers.L2(1e-5)
-
-# ! Added K step GAN update
-# ! Used iter for dataset loading
-# ! Used only LR + LZl1 + LZiZ for early stopping
-# ! Used L21 norm- Bad Results
-# ! Epochs- 500
-# ! adv_dec loss is generally larger than adv_enc loss
+l2_reg = tf.keras.regularizers.L2(1e-5) # !
 
 # ------------------------------
 # Utility / Model components
@@ -37,11 +34,10 @@ def compute_dz(B):
 
 class HADGAN(tf.keras.Model):
     def __init__(self, enc, dec, dznet, dinet):
+    # def __init__(self, enc, dec):
         super().__init__()
         self.enc = enc
         self.dec = dec
-        self.dznet = dznet
-        self.dinet = dinet
 
     def call(self, x, training=False):
         # only forward through encoder+decoder for inference
@@ -65,7 +61,7 @@ class FCBlock(tf.keras.Model):
         return x
 
 class Encoder(tf.keras.Model):
-    def __init__(self, d1=1000, d2=1000, dz=None, dropout_latent=0.5): # !
+    def __init__(self, d1=1000, d2=1000, dz=None, dropout_latent=1.0): # !
         super().__init__()
         self.net = Sequential([
             FCBlock(d1, batchnorm=True,kernel_regularizer=l2_reg),
@@ -121,7 +117,7 @@ class ImageDiscriminator(tf.keras.Model):
 # ------------------------------
 # Loss helpers
 # ------------------------------
-def reconstruction_loss(x, xrec):
+def reconstruction_loss(x, xrec): # ! added L21 norm
     batch_size = tf.shape(x)[0]
     error_matrix=(x-xrec) # (batch_size,B)
     res=tf.math.sqrt(tf.reduce_sum(tf.square(error_matrix),axis=1)+1e-8) # (batch_size,)
@@ -129,7 +125,7 @@ def reconstruction_loss(x, xrec):
     return (1/(2*tf.cast(batch_size, tf.float32)))*rec_loss
     # return tf.reduce_mean((x - xrec) ** 2)
 
-def consistency_loss(z, encoder, decoder): 
+def consistency_loss(z, encoder, decoder): # ! added L21 norm
     # L_ziz = (1/dz) * || z - E(De(z)) ||^2  (paper)
     # z_const = tf.stop_gradient(z)  # as paper describes mapping z ~ N(0,I) -> De(z) -> E(De(z)), but we compute gradient w.r.t E in AE update separately
     rec = encoder(decoder(z,training=True),training=True)
@@ -230,7 +226,7 @@ def spectral_detector_from_residual(residual):
     m = np.sum(dif.dot(precision) * dif, axis=1)
     return m.reshape(H, W)
 
-def fuse_spatial_spectral(dspatial, dspectral, lam=0.5):
+def fuse_spatial_spectral(dspatial, dspectral, lam=0+.5):
     # normalize each
     ds = (dspatial - dspatial.min()) / (np.ptp(dspatial) + 1e-8)
     dspec = (dspectral - dspectral.min()) / (np.ptp(dspectral) + 1e-8)
@@ -254,7 +250,8 @@ def train_hadgan(hsi_array,
                  lr_others=1e-4,
                  batch_size=32,
                  dropout=0.5,
-                 k_steps=1
+                 S=150, # !
+                 lambda_=1e-2 # !
                  ):
     """
     hsi_array: numpy array (H, W, B) with float values (recommended normalized per band)
@@ -265,191 +262,149 @@ def train_hadgan(hsi_array,
     H,W,B = hsi_array.shape
     dz = compute_dz(B)
     X = hsi_array.reshape(-1, B).astype(np.float32)
-    dataset = tf.data.Dataset.from_tensor_slices(X).batch(batch_size)
-    # dataset_iter=iter(tf.data.Dataset.from_tensor_slices(X).batch(batch_size).repeat())
+    N=X.shape[0]
+    # dataset = tf.data.Dataset.from_tensor_slices(X).batch(batch_size)
+    # loader = dataset.batch(batch_size=batch_size, drop_remainder=False)  # paper uses whole-image batch MxN
 
     # models
-    enc = Encoder(dz=dz, dropout_latent=dropout)
+    enc = Encoder(dz=dz, dropout_latent=0.5)
     dec = Decoder(B=B)
-    dznet = LatentDiscriminator()
-    dinet = ImageDiscriminator()
+    # dznet = LatentDiscriminator()
+    # dinet = ImageDiscriminator()
 
     # optimizers
     opt_enc = tf.keras.optimizers.RMSprop(learning_rate=lr_enc)
     opt_dec = tf.keras.optimizers.Adam(learning_rate=lr_others)
-    opt_dz = tf.keras.optimizers.Adam(learning_rate=lr_others)
-    opt_di = tf.keras.optimizers.Adam(learning_rate=lr_others)
+    # opt_dz = tf.keras.optimizers.Adam(learning_rate=lr_others)
+    # opt_di = tf.keras.optimizers.Adam(learning_rate=lr_others)
 
     # Early stopping parameters
     patience = 50  # Number of epochs to wait for improvement
     min_delta = 0.0001  # Minimum change to be considered an improvement
     best_loss = float('inf')
     epochs_no_improve = 0
-    best_weights=None
+    # best_weights=None
+
+    # ! build supergraph
+    SG,_,_= supergraph(hsi_array,S) # SG is the graph Laplacian of size (H*W, H*W)
+    X=tf.convert_to_tensor(X,dtype=tf.float32)
+    SG=tf.convert_to_tensor(SG,dtype=tf.float32)
+
+    # !
+    batch_size = min(batch_size, N)
+    batch_num = int(np.ceil(N / batch_size))
 
     # training
     start = time.time()
-    num_batches=math.ceil(X.shape[0]/batch_size)
-    # for ep in range(epochs):
-    #     # batch_count = 0
-    #     total_loss_epoch=0
-
-    #     for _ in range(int(num_batches)):
-    #         # x = xbatch # (Npix, B)
-
-    #         # ===== 1) Update Discriminators for K steps =====
-    #         for _ in range(k_steps):
-    #             x=next(dataset_iter) # get next batch
-    #             Npix = x.shape[0]
-
-    #             # ===== Update latent discriminator DZ =====
-    #             with tf.GradientTape() as tape:
-    #                 z_fake = tf.stop_gradient(enc(x,training=False))
-    #                 z_real = tf.random.normal(z_fake.shape) # sample from N(0,I)
-    #                 logits_real = dznet(z_real,training=True)
-    #                 logits_fake = dznet(z_fake,training=True)
-    #                 labels_real = tf.ones_like(logits_real)
-    #                 labels_fake = tf.zeros_like(logits_fake)
-    #                 loss_dz = bce_logits(labels_real, logits_real) + bce_logits(labels_fake, logits_fake)
-    #             grads=tape.gradient(loss_dz, dznet.trainable_variables)
-    #             opt_dz.apply_gradients(zip(grads, dznet.trainable_variables))
-
-    #             # ===== Update image discriminator DI =====
-    #             with tf.GradientTape() as tape:
-    #                 z_e = enc(x,training=False)
-    #                 xrec_detached = tf.stop_gradient(dec(z_e,training=False))
-    #                 logits_real = dinet(x,training=True)
-    #                 logits_fake = dinet(xrec_detached,training=True)
-    #                 labels_real = tf.ones_like(logits_real)
-    #                 labels_fake = tf.zeros_like(logits_fake)
-    #                 loss_di = bce_logits(labels_real, logits_real) + bce_logits(labels_fake, logits_fake)
-    #             grads=tape.gradient(loss_di, dinet.trainable_variables)
-    #             opt_di.apply_gradients(zip(grads, dinet.trainable_variables))
-
-    #         # ===== 2) Update Generators (Encoder and Decoder) for 1 step =====
-
-    #         # ===== Update encoder+decoder (AE) with L = alpha0*LR + alpha1*Lziz + alpha2*Lzl1
-    #         x=next(dataset_iter)
-    #         with tf.GradientTape(persistent=True) as tape:
-    #             z = enc(x,training=True)
-    #             xrec = dec(z,training=True)
-    #             LR = reconstruction_loss(x, xrec)
-    #             Lziz = consistency_loss(z, enc, dec)
-    #             Lzl1 = shrink_loss(z)
-    #             loss_ae = alpha0 * LR + alpha1 * Lziz + alpha2 * Lzl1
-
-    #             # plus adversarial losses to fool discriminators (enc -> latent, dec -> image)
-
-    #             # encoder adversarial: make dznet(enc(x)) be labeled as real (1)
-    #             logits_enc_adv = dznet(z,training=True)
-    #             # This is the non saturating Encoder (Generator) loss
-    #             loss_enc_adv = bce_logits(logits_enc_adv, tf.ones_like(logits_enc_adv))
-
-    #             # decoder adversarial: make dinet(dec(z)) be labeled as real (1)
-    #             logits_dec_adv = dinet(xrec,training=True)
-    #             # This is the non saturating Decoder (Generator) loss
-    #             loss_dec_adv = bce_logits(logits_dec_adv, tf.ones_like(logits_dec_adv))
-                
-    #             enc_loss = loss_ae + 1.0 * loss_enc_adv  # 1.0 is a chosen weight for adversarial term
-    #             dec_loss = loss_ae + 1.0 * loss_dec_adv
-
-    #         # combine: update encoder with AE loss + encoder adversarial; update decoder with AE loss + decoder adversarial
-    #         # We update both with combined loss but split optimizer steps
-    #         grads_enc = tape.gradient(enc_loss, enc.trainable_variables)
-    #         grads_dec = tape.gradient(dec_loss, dec.trainable_variables)
-    #         opt_enc.apply_gradients(zip(grads_enc, enc.trainable_variables))
-    #         opt_dec.apply_gradients(zip(grads_dec, dec.trainable_variables))
-
-    #         total_loss_epoch += (loss_ae).numpy()
-    #         # batch_count += 1
-
-    #         del tape  # free memory
-
     for ep in range(epochs):
-        total_loss_epoch = 0.0
-        
-        for xbatch in dataset:
-            x=xbatch
+        total_loss_epoch = 0 # Variable to accumulate loss over the epoch
+        batch_count = 0
+        idx=np.random.permutation(N) # shuffle the data
+        for j in range(batch_num):
+            # x = xbatch # (Npix, B)
+            batch_idx=idx[j*batch_size : min((j+1)*batch_size, N)]
+            x = tf.gather(X, batch_idx) # get the batch data
+            Npix = x.shape[0]
+            
+            L=tf.gather(tf.gather(SG, batch_idx, axis=0), batch_idx, axis=1) # get the corresponding graph Laplacian
 
-            # 1. Update Discriminators (k_steps times)
-            for _ in range(k_steps):
-                with tf.GradientTape() as tape:
-                    z_fake = enc(x, training=False)
-                    z_real = tf.random.normal(tf.shape(z_fake))
-                    logits_real = dznet(z_real, training=True)
-                    logits_fake = dznet(z_fake, training=True)
-                    loss_dz = bce_logits(tf.ones_like(logits_real), logits_real) + \
-                              bce_logits(tf.zeros_like(logits_fake), logits_fake)
-                grads = tape.gradient(loss_dz, dznet.trainable_variables)
-                opt_dz.apply_gradients(zip(grads, dznet.trainable_variables))
-                
-                with tf.GradientTape() as tape:
-                    z_e = enc(x, training=False)
-                    xrec_detached = dec(z_e, training=False)
-                    logits_real = dinet(x, training=True)
-                    logits_fake = dinet(xrec_detached, training=True)
-                    loss_di = bce_logits(tf.ones_like(logits_real), logits_real) + \
-                              bce_logits(tf.zeros_like(logits_fake), logits_fake)
-                grads = tape.gradient(loss_di, dinet.trainable_variables)
-                opt_di.apply_gradients(zip(grads, dinet.trainable_variables))
+            # ===== 1) Update latent discriminator DZ =====
+            # with tf.GradientTape() as tape:
+            #     z_fake = tf.stop_gradient(enc(x,training=False))
+            #     z_real = tf.random.normal(z_fake.shape) # sample from N(0,I)
+            #     logits_real = dznet(z_real,training=True)
+            #     logits_fake = dznet(z_fake,training=True)
+            #     labels_real = tf.ones_like(logits_real)
+            #     labels_fake = tf.zeros_like(logits_fake)
+            #     loss_dz = bce_logits(labels_real, logits_real) + bce_logits(labels_fake, logits_fake)
+            # grads=tape.gradient(loss_dz, dznet.trainable_variables)
+            # opt_dz.apply_gradients(zip(grads, dznet.trainable_variables))
 
-            # 2. Update Generators (1 time)
+            # ===== 2) Update image discriminator DI =====
+            # with tf.GradientTape() as tape:
+            #     z_e = enc(x,training=False)
+            #     xrec_detached = tf.stop_gradient(dec(z_e,training=False))
+            #     logits_real = dinet(x,training=True)
+            #     logits_fake = dinet(xrec_detached,training=True)
+            #     labels_real = tf.ones_like(logits_real)
+            #     labels_fake = tf.zeros_like(logits_fake)
+            #     loss_di = bce_logits(labels_real, logits_real) + bce_logits(labels_fake, logits_fake)
+            # grads=tape.gradient(loss_di, dinet.trainable_variables)
+            # opt_di.apply_gradients(zip(grads, dinet.trainable_variables))
+
+            # ===== 3) Update encoder+decoder (AE) with L = alpha0*LR + alpha1*Lziz + alpha2*Lzl1
             with tf.GradientTape(persistent=True) as tape:
-                z = enc(x, training=True)
-                xrec = dec(z, training=True)
-                
+                z = enc(x,training=True)
+                xrec = dec(z,training=True)
                 LR = reconstruction_loss(x, xrec)
                 Lziz = consistency_loss(z, enc, dec)
                 Lzl1 = shrink_loss(z)
                 loss_ae = alpha0 * LR + alpha1 * Lziz + alpha2 * Lzl1
-                
-                logits_enc_adv = dznet(z, training=True)
-                loss_enc_adv = bce_logits(tf.ones_like(logits_enc_adv), logits_enc_adv)
-                
-                logits_dec_adv = dinet(xrec, training=True)
-                loss_dec_adv = bce_logits(tf.ones_like(logits_dec_adv), logits_dec_adv)
-                
-                enc_loss = loss_ae + 1.0 * loss_enc_adv
-                dec_loss = loss_ae + 1.0 * loss_dec_adv
-            
+
+                # plus adversarial losses to fool discriminators (enc -> latent, dec -> image)
+                # encoder adversarial: make dznet(enc(x)) be labeled as real (1)
+                # logits_enc_adv = dznet(z,training=True)
+                # loss_enc_adv = bce_logits(logits_enc_adv, tf.ones_like(logits_enc_adv))
+                # # decoder adversarial: make dinet(dec(z)) be labeled as real (1)
+                # logits_dec_adv = dinet(xrec,training=True)
+                # loss_dec_adv = bce_logits(logits_dec_adv, tf.ones_like(logits_dec_adv))
+
+                # graph regularization loss # !
+                graph_loss = tf.linalg.trace(tf.matmul(tf.matmul(tf.transpose(z), L), z)) 
+                loss_ae += (lambda_/tf.cast(tf.shape(x)[0], tf.float32))*graph_loss
+
+                # combine losses
+                # enc_loss = loss_ae + 1.0 * loss_enc_adv  # 1.0 is a chosen weight for adversarial term
+                # dec_loss = loss_ae + 1.0 * loss_dec_adv
+                enc_loss=loss_ae
+                dec_loss=loss_ae
+
+
+            # combine: update encoder with AE loss + encoder adversarial; update decoder with AE loss + decoder adversarial
+            # We update both with combined loss but split optimizer steps
             grads_enc = tape.gradient(enc_loss, enc.trainable_variables)
             grads_dec = tape.gradient(dec_loss, dec.trainable_variables)
             opt_enc.apply_gradients(zip(grads_enc, enc.trainable_variables))
             opt_dec.apply_gradients(zip(grads_dec, dec.trainable_variables))
-            
-            total_loss_epoch += loss_ae.numpy()
-            del tape
+
+            # total_loss_epoch += (loss_ae + loss_enc_adv + loss_dec_adv).numpy()
+            total_loss_epoch+=(loss_ae).numpy()
+            batch_count += 1
+
+            del tape  # free memory
 
         # Average loss over epoch
-        avg_loss_epoch = total_loss_epoch / int(num_batches)
+        avg_loss_epoch = total_loss_epoch / batch_count
 
         # Check for improvement
-        # if avg_loss_epoch < best_loss - min_delta:
-        #     best_loss = avg_loss_epoch
-        #     epochs_no_improve = 0
-        #     best_weights = [enc.get_weights(), dec.get_weights(), dznet.get_weights(), dinet.get_weights()]
-        # else:
-        #     epochs_no_improve += 1
+        # Check for improvement
+        if avg_loss_epoch < best_loss - min_delta:
+            best_loss = avg_loss_epoch
+            epochs_no_improve = 0
+            # best_weights = [enc.get_weights(), dec.get_weights(), dznet.get_weights(), dinet.get_weights()]
+        else:
+            epochs_no_improve += 1
 
-        # # Check if patience is exceeded
-        # if epochs_no_improve >= patience:
-        #     print(f'Early stopping triggered after {ep+1} epochs. No improvement for {patience} epochs.')
-        #     break
+        # Check if patience is exceeded
+        if epochs_no_improve >= patience:
+            print(f'Early stopping triggered after {ep+1} epochs. No improvement for {patience} epochs.')
+            break
 
         # end epoch
         if (ep+1) % 50 == 0 or ep == 0:
             elapsed = time.time() - start
-            print(f"Epoch {ep+1}/{epochs} LR={LR.numpy():.6f} Lziz={Lziz.numpy():.6f} Lzl1={Lzl1.numpy():.6f} adv_enc={loss_enc_adv.numpy():.6f} adv_dec={loss_dec_adv.numpy():.6f} time={elapsed:.1f}s")
+            # print(f"Epoch {ep+1}/{epochs} LR={LR.numpy():.6f} Lziz={Lziz.numpy():.6f} Lzl1={Lzl1.numpy():.6f} adv_enc={loss_enc_adv.numpy():.6f} adv_dec={loss_dec_adv.numpy():.6f} time={elapsed:.1f}s")
+            print(f"Epoch {ep+1}/{epochs} LR={LR.numpy():.6f} Lziz={Lziz.numpy():.6f} Lzl1={Lzl1.numpy():.6f} time={elapsed:.1f}s")
 
     # After training, load the best weights
-    if best_weights:
-        enc.set_weights(best_weights[0])
-        dec.set_weights(best_weights[1])
-        dznet.set_weights(best_weights[2])
-        dinet.set_weights(best_weights[3])
+    # if best_weights:
+    #     enc.set_weights(best_weights[0])
+    #     dec.set_weights(best_weights[1])
+        # dznet.set_weights(best_weights[2])
+        # dinet.set_weights(best_weights[3])
 
-    hadgan = HADGAN(enc, dec, dznet, dinet)
-    hadgan.save(f"hadgan_sal_k{k_steps}_l21.keras", include_optimizer=True)
+    # hadgan = HADGAN(enc, dec, dznet, dinet)
+    # hadgan.save("hadganrgae_hu.keras", include_optimizer=True) # !
 
     # ===== inference =====
     Xtensor=tf.convert_to_tensor(X,dtype=tf.float32)
@@ -459,15 +414,20 @@ def train_hadgan(hsi_array,
     residual = compute_residual_map(hsi_array, recon)
 
     # spatial detector
-    bands = select_min_energy_bands(residual, k=3)
+    bands = select_min_energy_bands(residual, k=4)
     dspatial = spatial_detector_from_residual(residual, bands)
     # spectral detector
     dspectral = spectral_detector_from_residual(residual)
     # fuse
     final_map = fuse_spatial_spectral(dspatial, dspectral, lam=0.5)
 
+    # return {
+    #     'encoder': enc, 'decoder': dec, 'dznet': dznet, 'dinet': dinet,
+    #     'recon': recon, 'residual': residual,
+    #     'spatial_map': dspatial, 'spectral_map': dspectral, 'final_map': final_map
+    # }
     return {
-        'encoder': enc, 'decoder': dec, 'dznet': dznet, 'dinet': dinet,
+        'encoder': enc, 'decoder': dec,
         'recon': recon, 'residual': residual,
         'spatial_map': dspatial, 'spectral_map': dspectral, 'final_map': final_map
     }
@@ -480,100 +440,65 @@ if __name__ == "__main__":
 
     print(f"Dataset name: San_Deigo")
     print(f"Model: HADGAN")
+    print(f"HADGAN + SuperGraph + L21 - DN")
 
-    mat=sio.loadmat('/home/ubuntu/aditya/BioSky/Datasets/Sandiego/San_Diego.mat')
+    # mat=sio.loadmat('/home/ubuntu/aditya/BioSky/Datasets/Sandiego/San_Diego.mat')
     # mat=sio.loadmat('/home/ubuntu/aditya/BioSky/Datasets/HYDICE-urban/HYDICE_urban.mat')
-    # mat=sio.loadmat('/home/ubuntu/aditya/BioSky/Datasets/Salinas/Salinas.mat')
-    hsi = np.array(mat['data'], dtype=float)
-    H=hsi.shape[0]
-    W=hsi.shape[1]
+    mat=sio.loadmat('/home/ubuntu/aditya/BioSky/Datasets/Salinas/Salinas.mat')
+    hsi = np.array(mat['hsi'], dtype=float)
     print("HSI shape:", hsi.shape)
-    hsi = (hsi - hsi.min()) / (np.ptp(hsi) + 1e-8)  # normalize to [0,1] for stability
 
-    gt_mat = sio.loadmat("/home/ubuntu/aditya/BioSky/Datasets/Sandiego/San_Diego.mat")  # file with ground truth
+    hsi = (hsi - hsi.min()) / (np.ptp(hsi) + 1e-8)  # normalize to [0,1] for stability
+    # plt.imshow(hsi[:, :, 30], cmap='gray')
+    # plt.title("Band 30")
+    # plt.colorbar()
+    # plt.savefig("image.png", dpi=300)
+    # plt.close()
+
+    epochs=300
+    batch_size=10000
+    dropout=0.5
+    out = train_hadgan(hsi, epochs=epochs,batch_size=batch_size, dropout=dropout)
+
+    print(f"Number of epochs: {epochs}, batch size: {batch_size}, dropout: {dropout}")
+
+    # # # final detection map:
+    fmap = out['final_map']
+    print("Final map shape:", fmap.shape)
+
+    # # Save detection map with colorbar
+    # # plt.figure(figsize=(6, 6))
+    # # im = plt.imshow(fmap, cmap="jet")
+    # # plt.colorbar(im, fraction=0.046, pad=0.04)
+    # # plt.title("Anomaly Detection Map")
+    # # plt.savefig("final_map_with_colorbar.png", dpi=300)
+    # # plt.close()
+    # # print("Saved detection map as final_map_with_colorbar.png")
+
+    # gt_mat = sio.loadmat("/home/ubuntu/aditya/BioSky/Datasets/Sandiego/San_Diego.mat")  # file with ground truth
     # gt_mat=sio.loadmat('/home/ubuntu/aditya/BioSky/Datasets/HYDICE-urban/HYDICE_urban.mat')
-    # gt_mat=sio.loadmat("/home/ubuntu/aditya/BioSky/Datasets/Salinas/Salinas_gt.mat")
-    ref = gt_mat['map']  # shape (H,W), binary 0/1
+    gt_mat=sio.loadmat("/home/ubuntu/aditya/BioSky/Datasets/Salinas/Salinas_gt.mat")
+    ref = gt_mat['hsi_gt']  # shape (H,W), binary 0/1
     ref = ref.astype(np.uint8).reshape(-1)
     print("Ground truth shape:", ref.shape)
 
-    epochs=500
-    batch_size=H*W
-    dropout=0.5
-
-    # List to store the final maps for different k_steps
-    final_maps = {}
-    final_binary_maps={}
-
-    # Run training for k=1 to k=5
-    for k in range(1, 6):
-        print(f"\n--- Starting training with k_steps = {k} ---")
-        out = train_hadgan(hsi, epochs=epochs, batch_size=batch_size, dropout=dropout, k_steps=k)
-        final_maps[k] = out['final_map']
-        bests, pr_auc, roc=tune_methods(final_maps[k], ref.reshape(hsi.shape[0],hsi.shape[1]))
-
-        threshold=bests['iterative_f1'][1]
-        binary_map=(final_maps[k]>threshold).astype(np.uint8)
-        final_binary_maps[k]=binary_map
-
-        print(f"Tuned results:, {bests}")
-        print(f"pr_auc: {pr_auc}, roc: {roc}")
-
-    print("\n--- All training runs complete. Generating comparison image. ---")
-    
-    num_k_steps = len(final_maps)
-    fig, axes = plt.subplots(nrows=2, ncols=1 + num_k_steps, figsize=(20, 5))
-
-    # Plot Ground Truth in the first column
-    axes[0, 0].imshow(ref.reshape(H, W), cmap="gray")
-    axes[0, 0].set_title("Ground Truth")
-    axes[0, 0].axis('off')
-    axes[1, 0].axis('off')
-
-    # Iterate through k values and plot the continuous and binary maps
-    for i, k in enumerate(sorted(final_maps.keys())):
-        # Plot the continuous map in the first row, starting from the second column
-        im_continuous = axes[0, i + 1].imshow(final_maps[k].reshape(H,W), cmap="gray")
-        axes[0, i + 1].set_title(f"Continuous Map (k={k})")
-        axes[0, i + 1].axis('off')
-        fig.colorbar(im_continuous, ax=axes[0, i + 1], fraction=0.046, pad=0.04)
-
-        # Plot the binary map in the second row, starting from the second column
-        im_binary = axes[1, i + 1].imshow(final_binary_maps[k].reshape(H,W), cmap="gray")
-        axes[1, i + 1].set_title(f"Binary Map (k={k})")
-        axes[1, i + 1].axis('off')
-
-    plt.tight_layout()
-    plt.savefig("hadgan_sal_ksteps_l21_comparison.png", dpi=300)
-    plt.close()
-
-    print("Comparison image saved as hadgan_sal_ksteps_l21_comparison.png")
-
-    # out = train_hadgan(hsi, epochs=epochs,batch_size=batch_size, dropout=dropout,k_steps=5)
-
-    # print(f"Number of epochs: {epochs}, batch size: {batch_size}, dropout: {dropout}")
-
-    # # # # final detection map:
-    # fmap = out['final_map']
-    # print("Final map shape:", fmap.shape)
-
-    # bests, pr_auc, roc=tune_methods(fmap, ref.reshape(hsi.shape[0],hsi.shape[1]))
-    # print(f"Tuned results:, {bests}")
-    # print(f"pr_auc: {pr_auc}, roc: {roc}")
+    bests, pr_auc, roc=tune_methods(fmap, ref.reshape(hsi.shape[0],hsi.shape[1]))
+    print(f"Tuned results:, {bests}")
+    print(f"pr_auc: {pr_auc}, roc: {roc}")
 
     # threshold=bests['iterative_f1'][1]
     # binary_map=(fmap>threshold).astype(np.uint8)
 
-    # plt.figure(figsize=(12,5))
+    plt.figure(figsize=(12,5))
 
-    # plt.subplot(1,2,1)
-    # plt.imshow(ref.reshape(hsi.shape[0], hsi.shape[1]), cmap="gray")
-    # plt.title("Ground Truth Mask")
+    plt.subplot(1,2,1)
+    plt.imshow(ref.reshape(hsi.shape[0], hsi.shape[1]), cmap="gray")
+    plt.title("Ground Truth Mask")
 
-    # plt.subplot(1,2,2)
-    # plt.imshow(fmap, cmap="gray")
-    # plt.title("Anomaly Detection Map")
-    # plt.colorbar()
+    plt.subplot(1,2,2)
+    plt.imshow(fmap, cmap="gray")
+    plt.title("Anomaly Detection Map")
+    plt.colorbar()
 
-    # plt.savefig("hadgan_sd_k3.png", dpi=300) # !
-    # plt.close()
+    plt.savefig("modified_sal.png", dpi=300) # !
+    plt.close()
