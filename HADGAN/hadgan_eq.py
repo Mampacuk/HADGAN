@@ -127,22 +127,21 @@ def reconstruction_loss(x, xrec):
     res=tf.math.sqrt(tf.reduce_sum(tf.square(error_matrix),axis=1)+1e-8) # (batch_size,)
     rec_loss=tf.reduce_sum(res)
     return (1/(2*tf.cast(batch_size, tf.float32)))*rec_loss
-    # return tf.reduce_mean((x - xrec) ** 2)
+    # return (1/(2*tf.cast(batch_size, tf.float32)))*tf.reduce_sum((x - xrec) ** 2)
 
 def consistency_loss(z, encoder, decoder): 
-    # L_ziz = (1/dz) * || z - E(De(z)) ||^2  (paper)
     # z_const = tf.stop_gradient(z)  # as paper describes mapping z ~ N(0,I) -> De(z) -> E(De(z)), but we compute gradient w.r.t E in AE update separately
-    rec = encoder(decoder(z,training=True),training=True)
     batch_size = tf.shape(z)[0]
+    rec = encoder(decoder(z,training=True),training=True)
     error_matrix=(z-rec) # (batch_size,B)
     res=tf.math.sqrt(tf.reduce_sum(tf.square(error_matrix),axis=1)+1e-8) # (batch_size,)
     consis_loss=tf.reduce_sum(res)
     return (1/(2*tf.cast(batch_size, tf.float32)))*consis_loss
-    # return tf.reduce_mean((z - rec) ** 2)
+    # return (1/(2*tf.cast(batch_size, tf.float32)))*tf.reduce_sum((z - rec) ** 2)
 
 def shrink_loss(z):
-    # L_Zl1 = (1/dz) * ||z||^2
-    return tf.reduce_mean(z**2)
+    batch_size = tf.shape(z)[0]
+    return (1/(2*tf.cast(batch_size, tf.float32)))*tf.reduce_mean(z**2)
 
 # ------------------------------
 # Postprocessing detectors
