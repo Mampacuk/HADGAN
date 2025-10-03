@@ -13,7 +13,6 @@ def load_dataset(file_name):
         dataset.append(fltline)
     return np.mat(dataset)
 
-
 def hyperconvert2d(data3d):
     """
         Hyperconvert2d Convets an HSI cube to a 2D matrix
@@ -29,7 +28,6 @@ def hyperconvert2d(data3d):
     data2d = data3d.reshape(rows * cols, channels, order='F')
     return data2d.transpose()
 
-
 def hyperconvert3d(data2d, rows, cols, channels):
     """
     HyperConvert2D Converts an 2D matrix to a 3D data cube
@@ -44,7 +42,6 @@ def hyperconvert3d(data2d, rows, cols, channels):
     data3d = data2d.transpose().reshape(rows, cols, channels, order='F')
     return data3d
 
-
 def hypercorr(data2d):
     """
     compute the sample autocorrelation matrix of a 2D matrix
@@ -57,7 +54,6 @@ def hypercorr(data2d):
     """
     rows, cols = data2d.shape
     return np.dot(data2d.transpose(), data2d) / cols
-
 
 def hypercov(data2d):
     """
@@ -75,7 +71,6 @@ def hypercov(data2d):
         data2d[:, i] = data2d[:, i] - mu
 
     return np.dot(data2d.transpose(), data2d) / (cols - 1)
-
 
 def hypernorm(data2d, flag):
     """
@@ -103,7 +98,7 @@ def hypernorm(data2d, flag):
 
     return normdata
 
-
+# !
 def buildtraintestsamples(data2d, groundtruth, classnum, trainpercent):
     """
     Usage
@@ -147,7 +142,6 @@ def buildtraintestsamples(data2d, groundtruth, classnum, trainpercent):
     testlabel = np.hstack(testLabeltuple)
     return traindata, testdata, trainlabel, testlabel
 
-
 def convetimage(data2d):
     """
     Usage imshow the input matrix
@@ -160,7 +154,6 @@ def convetimage(data2d):
     minO = data2d.min()
     odata = (256/(maxO-minO))*(data2d - minO)
     return odata
-
 
 def hyperwincreat(data3d, winsize):
     """
@@ -220,7 +213,6 @@ def hyperwincreat(data3d, winsize):
 
         return win_matrix
 
-
 def hyper_IPD(data, center):
     """
        calculate image patch distance
@@ -243,7 +235,6 @@ def hyper_IPD(data, center):
     distance = np.sum(np.max(dist_com, axis=2), axis=0)
     return distance
 
-
 def rand_cent(data_matrix, k):
     rows, cols, n = data_matrix.shape
     # centrdist = np.zeros((rows, cols, n))
@@ -260,7 +251,6 @@ def rand_cent(data_matrix, k):
     #     centroids[:, :, i] = centrdist[:, :, index[i]]
 
     return centroids
-
 
 def Kmeans_win(data_matrix, k):
     rows, cols, n = data_matrix.shape
@@ -318,7 +308,6 @@ def Kmeans_win(data_matrix, k):
 
     return label_tmp
 
-
 def somp(dict, X, K):
     """
         calculate the joint sparse
@@ -359,20 +348,3 @@ def somp(dict, X, K):
 
     # print "Success! reconstruct error is:{0}".format(err)
     return alpha, index, chosen_atom, resdiual
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

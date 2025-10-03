@@ -1,15 +1,15 @@
-import argparse
+import argparse 
 import math
 import time
-import numpy as np
-from sklearn.metrics import roc_auc_score, average_precision_score
-from sklearn.covariance import EmpiricalCovariance
-import cv2
-import matplotlib.pyplot as plt
-import scipy.io as sio
+import numpy as np # type:ignore
+from sklearn.metrics import roc_auc_score, average_precision_score # type:ignore
+from sklearn.covariance import EmpiricalCovariance # type:ignore
+import cv2 # type:ignore
+import matplotlib.pyplot as plt # type:ignore
+import scipy.io as sio # type:ignore
 import os
 import random
-import tensorflow as tf
+import tensorflow as tf # type:ignore
 from tensorflow.keras import Sequential # type:ignore
 from tensorflow.keras.layers import Dense, BatchNormalization, Dropout, LeakyReLU # type:ignore
 from tensorflow.keras.callbacks import EarlyStopping # type:ignore
