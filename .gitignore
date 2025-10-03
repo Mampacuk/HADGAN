@@ -1,6 +1,7 @@
 .venv/
 Papers/
-Results/
+Results*/
+Datasets/MOCK*
 *.log
 *.pyc
 *.deb
@@ -8,3 +9,5 @@ Results/
 *.sh
 *.md
 *.keras
+rsync*
+HDF*/

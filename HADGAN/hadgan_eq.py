@@ -51,7 +51,6 @@ else:
 # ------------------------------
 def compute_dz(B):
     return int(math.sqrt(B) + 1)
-
 class HADGAN(tf.keras.Model):
     def __init__(self, enc, dec, dznet, dinet,**kwargs):
         super().__init__(**kwargs)
@@ -302,27 +301,6 @@ def spatial_detector_from_residual(residual, selected_bands): # !
 
     out_norm = (out - out.min()) / (np.ptp(out) + 1e-8)
     return out_norm
-    #     # morphological area opening/closing to remove large background components
-    #     # area_opening will remove components smaller than area threshold; but paper uses attribute opening/closing
-    #     # We choose area thresholds small to preserve small anomalies (paper suggests preserve small area -> so close to 0)
-    #     img = band
-    #     # convert to 8bit for skimage rank filters
-    #     band8 = img_as_ubyte((img - img.min()) / (np.ptp(img)+1e-8))
-    #     # area opening/closing using scikit-image (removes small objects)
-    #     opened = area_opening(band8, area_threshold=5)  # small threshold; tune per dataset
-    #     closed = area_closing(band8, area_threshold=5)
-    #     df = np.abs(band8 - opened).astype(np.float32) + np.abs(closed - band8).astype(np.float32)
-    #     df_list.append(df)
-    # F = np.mean(np.stack(df_list, axis=0), axis=0)
-    # # simple guided filter refinement: try opencv ximgproc if available, else use bilateral
-    # try:
-    #     gf = cv2.ximgproc.guidedFilter(guide=img_as_ubyte(F/255.0), src=img_as_ubyte(F/255.0), radius=3, eps=0.5)
-    #     out = gf.astype(np.float32)
-    # except Exception:
-    #     out = cv2.bilateralFilter(img_as_ubyte(F/255.0), d=5, sigmaColor=75, sigmaSpace=75)
-    # # linear coefficients mean step (paper), we simply normalize
-    # out_norm = (out - out.min()) / (np.ptp(out) + 1e-8)
-    # return out_norm
 
 def spectral_detector_from_residual(residual):
     # residual: (H,W,B) -> flatten pixels and compute Mahalanobis (RX) score
@@ -743,11 +721,11 @@ def inference(hsi,ref,Hk=120,Wk=120,method="mean"):
     # print("Inference results saved to output_mean.png")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--method', type=str, default='weighted', choices=['mean', 'weighted'])
-    args = parser.parse_args()
-    # print("What to do? 1.Train 2.Test")
-    # choice=input()
+    # parser = argparse.ArgumentParser()
+    # parser.add_argument('--method', type=str, default='weighted', choices=['mean', 'weighted'])
+    # args = parser.parse_args()
+    print("What to do? 1.Train 2.Test")
+    choice=input()
     
     # mat=sio.loadmat('/home/ubuntu/aditya/BioSky/Datasets/Sandiego/San_Diego.mat')
     # mat=sio.loadmat('/home/ubuntu/aditya/BioSky/Datasets/HYDICE-urban/HYDICE_urban.mat')
@@ -765,9 +743,9 @@ if __name__ == "__main__":
     ref = ref.astype(np.uint8).reshape(-1)
     print("Ground truth shape:", ref.shape)
 
-    # if choice=='1':
-    #     set_seeds(42)
-    #     train(hsi,ref)
-    # else:
-    set_seeds(42)
-    inference(hsi,ref,method=args.method)
+    if choice=='1':
+        set_seeds(42)
+        train(hsi,ref)
+    else:
+        set_seeds(42)
+        inference(hsi,ref,method=args.method)
