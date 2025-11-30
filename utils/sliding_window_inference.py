@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+from tqdm import tqdm
 
 tf.keras.mixed_precision.set_global_policy('mixed_float16')
 
@@ -25,18 +26,18 @@ def mean_inference(hsi,enc,dec,window,ov,batch_size):
     if w_starts[-1] != W - Wk:
         w_starts.append(W - Wk)   # force last patch to align with right edge
 
-    def gen_patches():
-        for i in h_starts:
-            for j in w_starts:
-                yield hsi[i:i+Hk, j:j+Wk, :]
+    # def gen_patches():
+    #     for i in h_starts:
+    #         for j in w_starts:
+    #             yield hsi[i:i+Hk, j:j+Wk, :]
 
-    dataset = (
-        tf.data.Dataset.from_generator(
-            gen_patches,
-            output_signature=tf.TensorSpec(shape=(Hk,Wk,Bk), dtype=tf.float32),
-        )
-        .prefetch(tf.data.AUTOTUNE)
-    )
+    # dataset = (
+    #     tf.data.Dataset.from_generator(
+    #         gen_patches,
+    #         output_signature=tf.TensorSpec(shape=(Hk,Wk,Bk), dtype=tf.float32),
+    #     )
+    #     .prefetch(tf.data.AUTOTUNE)
+    # )
 
     # ! ---- Using extract patches function ----
     # hsi = tf.transpose(hsi.numpy(), (2, 0, 1))
@@ -53,31 +54,50 @@ def mean_inference(hsi,enc,dec,window,ov,batch_size):
     # # Create a batch dataset for inference
     # dataset = tf.data.Dataset.from_tensor_slices(patches).batch(batch_size)
 
-    patch_recons=[]
-
-    for xbatch in dataset:
+    @tf.function
+    def inference_core(xbatch):
         X_flat = tf.reshape(xbatch, [-1, Bk])
         Z_batch = enc(X_flat, training=False)
         Xrec_batch = dec(Z_batch, training=False)
         recon = tf.reshape(Xrec_batch, [-1, Hk, Wk, Bk])  # back to patch shape
-        patch_recons.append(recon)
+        recon=tf.cast(recon,tf.float32)
+        return recon
 
-    # patch_recons = tf.concat(patch_recons, axis=0)
+    # patch_recons=[]
 
-    idx=0
-    for i in h_starts:
+    # for xbatch in dataset:
+        # X_flat = tf.reshape(xbatch, [-1, Bk])
+        # Z_batch = enc(X_flat, training=False)
+        # Xrec_batch = dec(Z_batch, training=False)
+        # recon = tf.reshape(Xrec_batch, [-1, Hk, Wk, Bk])  # back to patch shape
+    #     patch_recons.append(recon)
+
+    # # patch_recons = tf.concat(patch_recons, axis=0)
+
+    # idx=0
+    # for i in h_starts:
+    #     for j in w_starts:
+    #             patch_rec=patch_recons[idx]
+    #             patch_rec = tf.cast(patch_rec, tf.float32)
+
+                # Xrec[i:i+Hk, j:j+Wk, :].assign(Xrec[i:i+Hk, j:j+Wk, :] + patch_rec)
+                # K[i:i+Hk, j:j+Wk, :].assign(K[i:i+Hk, j:j+Wk, :] + 1.0)
+
+    #             idx+=1
+
+    for i in tqdm(h_starts, desc="Inference Progress"):
         for j in w_starts:
-                patch_rec=patch_recons[idx]
-                patch_rec = tf.cast(patch_rec, tf.float32)
+            patch=hsi[i:i+Hk,j:j+Wk,:]
+            recon=inference_core(patch)
 
-                Xrec[i:i+Hk, j:j+Wk, :].assign(Xrec[i:i+Hk, j:j+Wk, :] + patch_rec)
-                K[i:i+Hk, j:j+Wk, :].assign(K[i:i+Hk, j:j+Wk, :] + 1.0)
+            Xrec[i:i+Hk, j:j+Wk, :].assign(Xrec[i:i+Hk, j:j+Wk, :] + recon)
+            K[i:i+Hk, j:j+Wk, :].assign(K[i:i+Hk, j:j+Wk, :] + 1.0)
 
-                idx+=1
 
     Xrec.assign(Xrec/tf.maximum(K,1e-8))
     return Xrec
 
+# @tf.function
 def weighted_inference(hsi, enc, dec, window, ov,batch_size, sigma=None):
     H, W, B = hsi.shape
     Hk,Wk,Bk=window
@@ -142,6 +162,16 @@ def weighted_inference(hsi, enc, dec, window, ov,batch_size, sigma=None):
     
     # Move to GPU explicitly
     weights = tf.constant(weights)  # now it's a tf.Tensor on default device (GPU if available)
+
+    # @tf.function
+    # def inference_core(xbatch):
+    #     X_flat = tf.reshape(xbatch, [-1, Bk])
+    #     Z_batch = enc(X_flat, training=False)
+    #     Xrec_batch = dec(Z_batch, training=False)
+    #     recon = tf.reshape(Xrec_batch, [-1, Hk, Wk, Bk])  # back to patch shape
+    #     recon = tf.cast(recon, tf.float32)
+    #     weighted_patch = recon * weights
+    #     return weighted_patch
 
     patch_recons=[]
 

@@ -3,7 +3,7 @@ import argparse
 import math
 import time
 import numpy as np
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
 from sklearn.covariance import EmpiricalCovariance
 import cv2
 import matplotlib.pyplot as plt
@@ -245,7 +245,7 @@ class ImageDiscriminator(tf.keras.Model):
 # ------------------------------
 # Loss helpers
 # ------------------------------
-def reconstruction_loss(x, xrec,lambda_sam=1.0,lambda_smooth=0.2):
+def reconstruction_loss(x, xrec,lambda_sam=1.0):
     batch_size = tf.shape(x)[0]
     x = tf.cast(x, tf.float32)
     xrec=tf.cast(xrec,tf.float32)
@@ -283,98 +283,6 @@ def consistency_loss(z, encoder, decoder):
 def shrink_loss(z):
     z=tf.cast(z,tf.float32)
     return tf.reduce_mean(z**2)
-
-# ------------------------------
-# Postprocessing detectors
-# ------------------------------
-# def compute_residual_map(hsi, recon):
-#     # hsi, recon are (H, W, B)
-#     return np.abs(hsi - recon)  # shape (H,W,B)
-
-# def select_min_energy_bands(residual, k=3):
-#     # residual shape (H,W,B)
-#     H,W,B = residual.shape
-#     energies = residual.reshape(-1, B).sum(axis=0)  # sum over space for each band
-#     idx = np.argsort(energies)[:k]
-#     return idx
-
-# def spatial_detector_from_residual(residual, selected_bands): # !
-#     # residual: (H,W,B)
-#     H,W,B = residual.shape
-#     # compute per-band images (grayscale)
-#     df_list = []
-#     for b in selected_bands:
-#         band = residual[:,:,b]
-
-#         # Normalize to 8-bit for OpenCV
-#         band8 = cv2.normalize(band, None, 0, 255, cv2.NORM_MINMAX).astype('uint8')
-        
-#         # Simulating "attribute and edge-preserving filters" with a combination of filters.
-#         # Here, we use a median filter to reduce salt-and-pepper noise and
-#         # a bilateral filter for edge-aware smoothing, which is an alternative
-#         # to the guided filter if it's not available.
-#         denoised = cv2.medianBlur(band8, 3)
-#         smoothed = cv2.bilateralFilter(denoised, 5, 75, 75)
-        
-#         # Calculate residual to highlight filtered-out anomalies
-#         df = np.abs(band8.astype(np.float32) - smoothed.astype(np.float32))
-#         df_list.append(df)
-        
-#     F = np.mean(np.stack(df_list, axis=0), axis=0)
-    
-#     # Paper uses Guided Filter [cite: 313]
-#     try:
-#         F_norm = cv2.normalize(F, None, 0, 255, cv2.NORM_MINMAX).astype('float32')
-#         # The paper suggests filter size 3 and blur degree 0.5 [cite: 317]
-#         # guided filter requires an 8-bit or float32 guide and source
-#         gf = cv2.ximgproc.guidedFilter(guide=F_norm, src=F_norm, radius=3, eps=0.5)
-#         out = gf
-#     except Exception:
-#         # Fallback if ximgproc is not installed
-#         out = cv2.bilateralFilter(cv2.normalize(F, None, 0, 255, cv2.NORM_MINMAX).astype('uint8'), 5, 75, 75).astype('float32')
-
-#     out_norm = (out - out.min()) / (np.ptp(out) + 1e-8)
-#     return out_norm
-#     #     # morphological area opening/closing to remove large background components
-#     #     # area_opening will remove components smaller than area threshold; but paper uses attribute opening/closing
-#     #     # We choose area thresholds small to preserve small anomalies (paper suggests preserve small area -> so close to 0)
-#     #     img = band
-#     #     # convert to 8bit for skimage rank filters
-#     #     band8 = img_as_ubyte((img - img.min()) / (np.ptp(img)+1e-8))
-#     #     # area opening/closing using scikit-image (removes small objects)
-#     #     opened = area_opening(band8, area_threshold=5)  # small threshold; tune per dataset
-#     #     closed = area_closing(band8, area_threshold=5)
-#     #     df = np.abs(band8 - opened).astype(np.float32) + np.abs(closed - band8).astype(np.float32)
-#     #     df_list.append(df)
-#     # F = np.mean(np.stack(df_list, axis=0), axis=0)
-#     # # simple guided filter refinement: try opencv ximgproc if available, else use bilateral
-#     # try:
-#     #     gf = cv2.ximgproc.guidedFilter(guide=img_as_ubyte(F/255.0), src=img_as_ubyte(F/255.0), radius=3, eps=0.5)
-#     #     out = gf.astype(np.float32)
-#     # except Exception:
-#     #     out = cv2.bilateralFilter(img_as_ubyte(F/255.0), d=5, sigmaColor=75, sigmaSpace=75)
-#     # # linear coefficients mean step (paper), we simply normalize
-#     # out_norm = (out - out.min()) / (np.ptp(out) + 1e-8)
-#     # return out_norm
-
-# def spectral_detector_from_residual(residual):
-#     # residual: (H,W,B) -> flatten pixels and compute Mahalanobis (RX) score
-#     H,W,B = residual.shape
-#     X = residual.reshape(-1, B)
-#     # fit mean & covariance robustly
-#     cov = EmpiricalCovariance().fit(X)
-#     mean = cov.location_
-#     precision = cov.precision_
-#     dif = (X - mean)
-#     # Mahalanobis distance per pixel
-#     m = np.sum(dif.dot(precision) * dif, axis=1)
-#     return m.reshape(H, W)
-
-# def fuse_spatial_spectral(dspatial, dspectral, lam=0.5):
-#     # normalize each
-#     ds = (dspatial - dspatial.min()) / (np.ptp(dspatial) + 1e-8)
-#     dspec = (dspectral - dspectral.min()) / (np.ptp(dspectral) + 1e-8)
-#     return lam * ds + (1-lam) * dspec
 
 def set_seeds(seed=42):
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -720,61 +628,6 @@ def train(hsi,infer,ref,window,ov,method="mean"):
                 output_stream=sys.stdout
             )
 
-        # if (ep + 1) % 50 == 0 or ep == 0:
-        #     tf.print(f"--- Saving checkpoint for Epoch={ep+1} ---", output_stream=sys.stdout)
-
-        #     save_path = ckpt_manager.save()
-        #     tf.print(f"Checkpoint saved", output_stream=sys.stdout)
-
-        #     tf.print(f"--- Running {method} inference for Epoch={ep+1} ---",output_stream=sys.stdout)
-
-        #     subprocess.Popen([
-        #         sys.executable, "aditya/BioSky/HADGAN/infer.py", 
-        #         "--checkpoint", save_path,
-        #         "--epoch", str(ep+1),
-        #         "--method",method,
-        #         "--overlap",ov
-        #     ])
-
-            # # with tf.device('/CPU:0'):
-            # batch_size=Hk*Wk
-            # if method=="mean":
-            #     Xrec=mean_inference(infer,enc,dec,window,ov,batch_size)
-            # else:
-            #     Xrec=weighted_inference(infer,enc,dec,window,ov,batch_size)
-
-            # residual = compute_residual_map(infer, Xrec)
-
-            # # --- Run Post-processing Detectors ---
-            # bands = select_min_energy_bands(residual, k=3)
-            # dspatial = spatial_detector_from_residual(residual, bands)
-            # dspectral = spectral_detector_from_residual(residual)
-            # fmap = fuse_spatial_spectral(dspatial, dspectral, lam=0.5)
-
-            # final_maps[ep+1]=fmap
-
-            # # --- Evaluate and Visualize ---
-            # tf.print(f"--- Inference completed for Epoch={ep+1}. Evaluating results. ---",output_stream=sys.stdout)
-            # # bests, pr_auc, roc = tune_methods(fmap, ref.reshape(H, W))
-            # threshold,iterative_f1=iterative_f1_threshold(ref.ravel(), fmap.ravel())
-            # bests=(iterative_f1, threshold, None, None)
-
-            # binary_map=(fmap>threshold).astype(np.uint8)
-
-            # final_binary_maps[ep+1]=binary_map
-
-            # # compute continuous-score metrics once for S
-            # pr_auc = average_precision_score(ref.ravel(), fmap.ravel())
-            # roc = roc_auc_score(ref.ravel(), fmap.ravel())
-
-            # tf.print(f"Loaded Model Tuned results:, {bests}",output_stream=sys.stdout)
-            # tf.print(f"Loaded Model PR-AUC: {pr_auc}, ROC: {roc}",output_stream=sys.stdout)
-
-            # del Xrec, residual, fmap, binary_map  # free Python references
-            # tf.keras.backend.clear_session()
-            # gc.collect()
-            # tf.experimental.async_clear_error()
-
     # num_k_steps = len(final_maps)
     # fig, axes = plt.subplots(nrows=2, ncols=1 + num_k_steps, figsize=(3 * (1 + num_k_steps), 6))
 
@@ -815,73 +668,15 @@ def train(hsi,infer,ref,window,ov,method="mean"):
 
     print(f"Models saved to train_mock1_{Hk}.keras")
 
-    # ov=50 # !
-    # start = time.time()
-    # batch_size=Hk*Wk
-    # if method=="mean":
-    #     Xrec=mean_inference(hsi,enc,dec,window,ov,batch_size)
-    # else:
-    #     Xrec=weighted_inference(hsi,enc,dec,window,ov,batch_size)
-
-    # residual = compute_residual_map(hsi, Xrec)
-
-    # # --- Run Post-processing Detectors ---
-    # bands = select_min_energy_bands(residual, k=3)
-    # dspatial = spatial_detector_from_residual(residual, bands)
-    # dspectral = spectral_detector_from_residual(residual)
-    # fmap = fuse_spatial_spectral(dspatial, dspectral, lam=0.5)
-
-    # # final_maps[ov]=fmap
-
-    # # --- Evaluate and Visualize ---
-    # print(f"\n--- Inference completed for overlap parameters = {ov}%. Evaluating results. ---")
-    # # bests, pr_auc, roc = tune_methods(fmap, ref.reshape(H, W))
-    # threshold,iterative_f1=iterative_f1_threshold(ref.ravel(), fmap.ravel())
-    # bests=(iterative_f1, threshold, None, None)
-
-    # binary_map=(fmap>threshold).astype(np.uint8)
-
-    # # final_binary_maps[ov]=binary_map
-
-    # # compute continuous-score metrics once for S
-    # pr_auc = average_precision_score(ref.ravel(), fmap.ravel())
-    # roc = roc_auc_score(ref.ravel(), fmap.ravel())
-
-    # print(f"Loaded Model Tuned results:, {bests}")
-    # print(f"Loaded Model PR-AUC: {pr_auc}, ROC: {roc}")
-
-    # elapsed=time.time()-start
-    # print(f"--- Time elapsed: {elapsed:.1f}s. ---")
-
-    # print("\n--- All inference runs complete. Generating comparison image. ---")
-
-    # fig, axes = plt.subplots(1, 3, figsize=(12, 5), constrained_layout=True)
-
-    # axes[0].imshow(ref.reshape(H, W), cmap="gray")
-    # axes[0].set_title("Ground Truth Mask")
-
-    # im1 = axes[1].imshow(fmap, cmap="gray")
-    # axes[1].set_title("Anomaly Detection Map")
-    # fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
-
-    # im2 = axes[2].imshow(binary_map, cmap="gray")
-    # axes[2].set_title("Binary Anomaly Detection Map")
-    # fig.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
-
-    # fig.savefig(f"mock1_{method}_inference", dpi=300)
-    # plt.close(fig)
-
-    # print(f"Inference results saved to mock1_{method}_inference.png")
-
 # ------------------------------
 # Inference 
 # ------------------------------
 def inference(hsi,ref,window,method="mean"):
     H, W, B = hsi.shape
     Hk,Wk,Bk=window
-    # MODEL_PATH = f"/home/ubuntu/aditya/BioSky/Logs/train_mock1_{Hk}.keras"
+    MODEL_PATH = f"/home/ubuntu/aditya/BioSky/Logs/train_mock1_{Hk}.keras"
 
-    # # --- Define custom objects for loading ---
+    # --- Define custom objects for loading ---
     # custom_objects = {
     #     'HADGAN': HADGAN,
     #     'Encoder': Encoder,
@@ -891,14 +686,14 @@ def inference(hsi,ref,window,method="mean"):
     #     'FCBlock': FCBlock
     # }
 
-    # # --- Load the entire model ---
+    # --- Load the entire model ---
     # print(f"\n--- Loading model for inference ---")
     # loaded_hadgan = load_model(
     #     MODEL_PATH,
     #     custom_objects=custom_objects
     # )
 
-    # # --- Extract components and run inference ---
+    # # # --- Extract components and run inference ---
     # # We need the original Encoder/Decoder for the custom inference functions
     # enc = loaded_hadgan.enc
     # dec = loaded_hadgan.dec
@@ -916,61 +711,105 @@ def inference(hsi,ref,window,method="mean"):
     # else:
     #     Xrec=weighted_inference(hsi,enc,dec,window,ov,batch_size)
 
+    # del enc, dec
+
     # print("Reconstruction completed.")
-    # savemat="/home/ubuntu/aditya/BioSky/Logs/infer_mock2_rec.mat"
+    # savemat="/home/ubuntu/aditya/BioSky/PRE-EVALUATION/pre_eval_res.mat"
     # sio.savemat(savemat, {'data': Xrec})
 
     # return
 
-    mat=sio.loadmat("/home/ubuntu/aditya/BioSky/Logs/infer_mock2_rec.mat")
+    mat=sio.loadmat("/home/ubuntu/aditya/BioSky/PRE-EVALUATION/pre_eval_res.mat")
     Xrec = np.array(mat['data'], dtype=np.float32)
     del mat
+    gc.collect() # Force garbage collection
     
     print("Postprocessing started...")
-    mask=create_valid_mask(hsi)
-    residual = compute_residual_map(hsi, Xrec)
+    residual=compute_residual_map(hsi, Xrec)
     del Xrec
+    gc.collect() # Force garbage collection
+
+    mask=create_valid_mask(hsi)
 
     # === NEW: Apply mask to residual map ===
-    residual = residual * mask[:, :, np.newaxis] # Expand mask to (H,W,1) for broadcasting
+    # residual = residual * mask[:, :, np.newaxis] # Expand mask to (H,W,1) for broadcasting
 
     # --- Run Post-processing Detectors ---
     bands = select_min_energy_bands(residual, k=3)
 
-    dspatial = spatial_detector_from_residual_fast(residual, bands, mask)
+    dspatial = spatial_detector_from_residual_fast(residual, bands)
     
     del bands
+    gc.collect() # Force garbage collection
 
-    dspectral = spectral_detector_from_residual_fast(residual, mask)
+    dspectral = spectral_detector_from_residual_fast(residual)
 
-    fmap = fuse_spatial_spectral(dspatial, dspectral, lam=0.5)
+    del residual
+    gc.collect() # Force garbage collection
 
-    del dspatial, dspectral, residual
+    fmap=fuse_spatial_spectral(dspatial, dspectral, lam=0.5)
 
-    fmap[mask == 0] = 0  # keep only inside area
+    del dspatial, dspectral
+    gc.collect() # Force garbage collection
 
-    # --- Evaluate and Visualize ---
-    print(f"\n--- Inference completed for overlap parameters = {ov}%. Evaluating results. ---")
-    # bests, pr_auc, roc = tune_methods(fmap, ref.reshape(H, W))
-    threshold,iterative_f1=iterative_f1_threshold(ref.ravel(), fmap.ravel())
-    bests=(iterative_f1, threshold, None, None)
-
-    binary_map=(fmap>threshold).astype(np.uint8)
-    binary_map*=mask.astype(np.uint8)
-
-    # compute continuous-score metrics once for S
-    pr_auc = average_precision_score(ref.ravel(), fmap.ravel())
-    roc = roc_auc_score(ref.ravel(), fmap.ravel())
-
-    print(f"Loaded Model Tuned results:, {bests}")
-    print(f"Loaded Model PR-AUC: {pr_auc}, ROC: {roc}")
+    # fmap[mask == 0] = 0  # keep only inside area
 
     # from skimage.filters import threshold_otsu
 
     # threshold = threshold_otsu(fmap)
-    # binary_map = (fmap > threshold).astype(np.uint8)
+    # print(f"Threshold using otsu for unsuppressed map: {threshold}")
 
-    he5_path = "/home/ubuntu/aditya/BioSky/Datasets/PRS_L2D_STD_20241205050514_20241205050518_0001.he5"
+    # threshold,iterative_f1=iterative_f1_threshold(ref.ravel(), fmap.ravel())
+
+    # binary_map=(fmap>threshold).astype(np.uint8)
+
+    # iterative_f1=f1_score(ref.ravel(),binary_map.ravel())
+
+    # bests=(iterative_f1, threshold, None, None)
+
+    # compute continuous-score metrics once for S
+    # pr_auc = average_precision_score(ref.ravel(), fmap.ravel())
+    # roc = roc_auc_score(ref.ravel(), fmap.ravel())
+
+    # print(f"Loaded Model Tuned results for original map:, {bests}")
+    # print(f"Loaded Model PR-AUC for original map: {pr_auc}, ROC: {roc}")
+    
+    # he5_path = "/home/ubuntu/aditya/BioSky/PRE-EVALUATION/PRS_L2D_STD_20210516050459_20210516050503_0001.he5"
+    s3_path = "/home/ubuntu/data/PRS_L2D_STD_20210516050459_20210516050503_0001.he5"
+    # fmap_manmade=create_manmade_mask(hsi,fmap)
+    # fmap_manmade[mask == 0] = 0  # keep only inside area
+
+    fmap_manmade=apply_manual_mask(fmap,s3_path)
+    # fmap_manmade[mask==0]=0 
+
+    # del fmap
+
+    # --- Evaluate and Visualize ---
+    print(f"\n--- Inference completed for overlap parameters = {ov}%. Evaluating results. ---")
+    # bests, pr_auc, roc = tune_methods(fmap_manmade, ref.reshape(H, W))
+
+    # from skimage.filters import threshold_otsu
+
+    # threshold = threshold_otsu(fmap_manmade)
+    # print(f"Threshold using otsu for unsuppressed map: {threshold}")
+
+    # threshold,iterative_f1=iterative_f1_threshold(ref.ravel(), fmap_manmade.ravel())
+    threshold=0.215
+    binary_map_manmade=(fmap_manmade>threshold).astype(np.uint8) # !
+    # from skimage.filters import threshold_otsu
+    # threshold = threshold_otsu(fmap_manmade)
+    # binary_map_manmade = (fmap_manmade > threshold).astype(np.uint8)
+
+    # iterative_f1=f1_score(ref.ravel(),binary_map_manmade.ravel())
+
+    # bests=(iterative_f1, threshold, None, None)
+
+    # # compute continuous-score metrics once for S
+    # pr_auc = average_precision_score(ref.ravel(), fmap_manmade.ravel())
+    # roc = roc_auc_score(ref.ravel(), fmap_manmade.ravel())
+
+    # print(f"Loaded Model Tuned results for original map:, {bests}")
+    # print(f"Loaded Model PR-AUC for original map: {pr_auc}, ROC: {roc}")
 
     def save_geotiff_from_he5(he5_path, output_path, binary_map):
         """
@@ -1009,29 +848,38 @@ def inference(hsi,ref,window,method="mean"):
 
         print(f"✅ GeoTIFF saved for patch size {Hk}*{Wk}")
 
-    output_path = f"/home/ubuntu/aditya/BioSky/Logs/infer_mock2_.tif"
-    # save_geotiff_from_he5(he5_path, output_path, binary_map)
+    output_path = f"/home/ubuntu/aditya/BioSky/PRE-EVALUATION/evaluation_anomaly_map_{threshold*100}.tif"
+    save_geotiff_from_he5(s3_path, output_path, binary_map_manmade)
 
     elapsed=time.time()-start
     print(f"--- Time elapsed: {elapsed:.1f}s. ---")
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 5), constrained_layout=True)
+    # Change layout to 1 row, 4 columns
+    fig, axes = plt.subplots(1, 4, figsize=(16, 5), constrained_layout=True) 
 
-    axes[0].imshow(ref.reshape(H, W), cmap="gray")
-    axes[0].set_title("Ground Truth Mask")
+    axes[0].imshow(ref.reshape(1216, 1280), cmap="gray")
+    axes[0].set_title("1. Ground Truth Mask")
+    axes[0].axis('off') # Hide axes for cleaner image viewing
 
-    im1 = axes[1].imshow(fmap, cmap="gray",interpolation='none')
-    axes[1].set_title("Anomaly Detection Map")
+    im1 = axes[1].imshow(fmap_manmade, cmap="gray", interpolation='none')
+    axes[1].set_title("2. Man-Made Filtered Map ")
+    axes[1].axis('off')
     fig.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
 
-    im2 = axes[2].imshow(binary_map, cmap="gray",interpolation='none')
-    axes[2].set_title("Binary Anomaly Detection Map")
+    im2 = axes[2].imshow(binary_map_manmade, cmap="gray", interpolation='none')
+    axes[2].set_title("3. Binary Man-Made Filtered Map")
+    axes[2].axis('off')
     fig.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+
+    im3 = axes[3].imshow(fmap, cmap="gray", interpolation='none')
+    axes[3].set_title("4. Original Map")
+    axes[3].axis('off')
+    fig.colorbar(im3, ax=axes[3], fraction=0.046, pad=0.04)
 
     fig.suptitle(f"Anomaly Detection Results with {ov} overlap", fontsize=16, fontweight="bold")
 
-    output_dir = "/home/ubuntu/aditya/BioSky/Logs"
-    output_path = os.path.join(output_dir, f"infer_mock2_{Hk}_{ov}_ov.png")
+    output_dir = "/home/ubuntu/aditya/BioSky/PRE-EVALUATION"
+    output_path = os.path.join(output_dir, f"pre_evaluation_anomaly_map.png")
     fig.savefig(output_path, dpi=300)
     plt.close(fig)
 
@@ -1046,7 +894,8 @@ if __name__ == "__main__":
     print("hsi image shape:", hsi.shape)
     hsi = (hsi - hsi.min()) / (np.ptp(hsi) + 1e-8) 
 
-    mat=sio.loadmat("/home/ubuntu/aditya/BioSky/Datasets/MOCK_2/prisma_data.mat")
+    # mat=sio.loadmat("/home/ubuntu/aditya/BioSky/Datasets/MOCK_2/prisma_data.mat")
+    mat=sio.loadmat("/home/ubuntu/aditya/BioSky/PRE-EVALUATION/pre_evaluation.mat")
     infer = np.array(mat['data'], dtype=np.float32)
     print("Infer shape:", infer.shape)
     infer = (infer - infer.min()) / (np.ptp(infer) + 1e-8)  # normalize to [0,1] for stability
