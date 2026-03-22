@@ -1,14 +1,7 @@
 import numpy as np
 import cv2
-from sklearn.covariance import EmpiricalCovariance, MinCovDet, LedoitWolf
+from sklearn.covariance import MinCovDet, LedoitWolf
 from sklearn.decomposition import PCA
-import h5py
-import rasterio
-from rasterio.transform import from_bounds
-from rasterio.crs import CRS
-import scipy.io as sio
-from scipy.io import savemat
-from PIL import Image
 
 polygon_points = [(235, 5), (1275, 235), (1030, 1205), (5, 960)]
 # polygon_points = [(235, 100), (1180, 235), (1030, 1116), (100, 960)]
@@ -393,45 +386,3 @@ def create_manmade_mask(hsi,fmap=None):
     del fmap
 
     return final_fmap
-
-def apply_manual_mask(fmap, he5_path):
-    # Extract the region corresponding to the HSI data using the HE5 file
-    with h5py.File(he5_path, 'r') as f:
-        # Read latitude and longitude grids
-        lat = f['HDFEOS/SWATHS/PRS_L2D_HCO/Geolocation Fields/Latitude'][:]
-        lon = f['HDFEOS/SWATHS/PRS_L2D_HCO/Geolocation Fields/Longitude'][:]
-
-    # Compute geographic bounds of the HSI data
-    min_lon, max_lon = lon.min(), lon.max()
-    min_lat, max_lat = lat.min(), lat.max()
-
-    height, width = fmap.shape[:2]
-
-    veg_mask_path = "/home/ubuntu/aditya/BioSky/PRE-EVALUATION/veg.tif"
-    water_mask_path="/home/ubuntu/aditya/BioSky/PRE-EVALUATION/water.tif"
-
-    # --- Step 2: Open manual vegetation mask ---
-    def crop_mask(path):
-        with rasterio.open(path) as src:
-            window = rasterio.windows.from_bounds(
-                left=min_lon, bottom=min_lat, 
-                right=max_lon, top=max_lat, 
-                transform=src.transform
-            )
-            mask_crop = src.read(1, window=window, out_shape=(height,width))
-            return (mask_crop == 1).astype(np.uint8)  # binary (1 = keep, 0 = mask out)
-    
-    veg_mask = crop_mask(veg_mask_path)
-    water_mask = crop_mask(water_mask_path)
-
-    # this gives 1 where water or vegetation is present
-    combined_mask = np.logical_or(veg_mask, water_mask).astype(np.uint8)
-
-    del veg_mask, water_mask
-
-    inverse_mask=1-combined_mask
-
-    # apply manual mask onto fmap
-    final_map=fmap*inverse_mask
-
-    return final_map
